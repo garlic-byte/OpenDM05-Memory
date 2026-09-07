@@ -4,6 +4,8 @@ This repository is based on the official [Dexmal OpenDM](https://github.com/dexm
 
 The extension keeps the upstream model architecture and training workflow. It adds only the pieces required to sample earlier frames from an episode-oriented JSONL dataset and pass them to DM0.5 as memory images.
 
+LIBERO training and evaluation reproduction is available on the [`libero`](https://github.com/garlic-byte/OpenDM05-Memory/tree/libero) branch.
+
 ## What is added
 
 - `opendm/dataset/memory_dataset.py`: episode-aware memory-frame sampling.
