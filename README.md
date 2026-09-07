@@ -282,6 +282,147 @@ untracked evaluation artifacts on the reproduction machine are stored under
 `/data/wudi/code_v6/experiment_runs/opendm-libero-full-sr-20260906`, with the
 aggregate machine-readable results in `summary.json`.
 
+### Reproduce the LIBERO evaluation
+
+The evaluator and policy run as separate processes. The policy exposes an HTTP
+service on port `7891`; the Dexbotic benchmark runs the LIBERO simulator and
+sends the two camera images plus robot state to that service.
+
+#### 1. Download the checkpoint
+
+Run from the OpenDM repository root:
+
+```bash
+git checkout libero
+
+hf download Dexmal/DM05-libero \
+  --local-dir ./checkpoints/DM05-libero
+```
+
+The checkpoint used for the table above had this model-file digest:
+
+```text
+model.safetensors SHA-256:
+575d0d8e0f75822e95f7adf3a5e62a7c331da0b82e6fc3efeea19ef1b927353f
+```
+
+#### 2. Start the DM05 policy service
+
+The following uses the recommended OpenDM image and GPU 0. The repository is
+mounted so the `libero` branch code and downloaded checkpoint are visible in
+the container.
+
+```bash
+docker pull dexmal/opendm:latest
+
+docker run -d --rm \
+  --name dm05-libero-server \
+  --gpus '"device=0"' \
+  --network host \
+  --shm-size=16g \
+  -v "$PWD":/app/opendm \
+  -w /app/opendm \
+  dexmal/opendm:latest \
+  bash -lc 'source /opt/conda/etc/profile.d/conda.sh && \
+    conda activate opendm && \
+    pip install -e . && \
+    script/dm05_launcher.sh \
+      --exp playground/dm05_libero.py \
+      --task inference \
+      --model-config.model-name-or-path ./checkpoints/DM05-libero \
+      --model-config.chunk-size 10 \
+      --inference-config.output-action-dim 7 \
+      --inference-config.image-prompts "Head" "Left wrist" \
+      --inference-config.port 7891'
+
+docker logs -f dm05-libero-server
+```
+
+Wait until Flask reports that it is listening on port `7891`. Keep this
+container running while evaluating; `Ctrl-C` exits log-following without
+stopping the container. This setup uses two images, an
+8-dimensional state, a 7-dimensional action, and action chunks of length 10.
+
+#### 3. Prepare the Dexbotic LIBERO benchmark
+
+In a separate directory:
+
+```bash
+git clone https://github.com/dexmal/dexbotic-benchmark.git
+cd dexbotic-benchmark
+git checkout e399519
+git submodule update --init --recursive libero
+docker pull dexmal/dexbotic_benchmark
+```
+
+Set `evaluation/configs/libero/example_dm05_libero.yaml` to:
+
+```yaml
+benchmark: libero_spatial
+num_trails_per_task: 50
+num_steps_wait: 10
+seed: 7
+
+base_url: http://127.0.0.1:7891
+api_style: v1
+replan_step: 10
+
+send_state: true
+send_image:
+  - image
+  - wrist_image
+discrete_gripper: false
+use_text_template: false
+
+output_dir: results/dm05_libero_spatial
+```
+
+`num_trails_per_task` is the spelling used by the benchmark. Run the evaluator
+on a different GPU when possible; this example assigns GPU 1 and uses EGL for
+headless rendering:
+
+```bash
+docker run --rm \
+  --gpus '"device=1"' \
+  --network host \
+  -e EGL_PLATFORM=device \
+  -e PYOPENGL_PLATFORM=egl \
+  -v "$PWD":/workspace \
+  -w /workspace \
+  dexmal/dexbotic_benchmark \
+  bash /workspace/scripts/env_sh/libero.sh \
+    /workspace/evaluation/configs/libero/example_dm05_libero.yaml
+```
+
+Repeat the run with `benchmark` and `output_dir` changed for
+`libero_object`, `libero_goal`, and `libero_10`. Each suite contains 10 tasks,
+so four suites at 50 episodes per task produce 2,000 episodes. Every output
+directory contains `results.json`, the resolved `config.yaml`, an evaluation
+log, and rollout videos. Suite and overall SR are computed as
+`successful_episodes / total_episodes`.
+
+#### Exact setup used for the reported result
+
+The reported run used eight RTX 3090 GPUs and the local
+`opendm:libero-cu124-egl` image (CUDA 12.4, PyTorch 2.6.0, plus EGL/Mesa and
+FFmpeg). Eight policy services listened on ports `7891` through `7898`. Each of
+the four suites was split into task ranges `[0, 5)` and `[5, 10)`, giving eight
+evaluator workers and 250 episodes per worker.
+
+Dexbotic commit `e399519` was patched locally to make its task loop honor
+`task_start` and `task_end`. This only divided the existing task loop for
+parallel execution; it did not change simulator behavior, task horizons,
+success conditions, observations, actions, seeds, or episode counts. The stock
+single-suite procedure above does not require this patch and evaluates the same
+protocol sequentially. The eight shard `results.json` files were merged by
+summing successes and episodes, yielding 1,959 / 2,000 = 97.95%.
+
+Stop the policy service after evaluation:
+
+```bash
+docker stop dm05-libero-server
+```
+
 ## Reproduced RoboDojo memory results
 
 The following task-level simulation results are reported for **DM0.5 / OpenDM05** on the official [RoboDojo rollout leaderboard](https://robodojo-benchmark.com/leaderboard/rollouts/OpenDM05?bench=sim). Values were checked on 2026-09-01. `Avg Score` and `Success Rate` are separate leaderboard metrics.
