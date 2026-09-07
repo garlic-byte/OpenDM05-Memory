@@ -259,6 +259,138 @@ WANDB_PROJECT=dm05-memory bash script/train_memory_sft.sh
 
 For non-interactive jobs, pass `WANDB_API_KEY` through the job environment or a secrets manager. Do not store it in source files or shell scripts.
 
+## Train or fine-tune DM05 on LIBERO
+
+The 97.95% result below uses the released `Dexmal/DM05-libero` checkpoint and
+does not include a local training run. To train a new LIBERO policy, start from
+the base `Dexmal/DM05` checkpoint and use the `libero_pi0_all` training split.
+The released `DM05-libero` checkpoint is an evaluation checkpoint, not the base
+checkpoint used by this recipe.
+
+The built-in LIBERO configuration uses two images (`Head` and `Left wrist`), an
+8-dimensional state, a 7-dimensional absolute action, and an action chunk size
+of 10. Training data and base weights are stored outside Git history.
+
+### 1. Prepare data and the base checkpoint
+
+Run from the repository root on the `libero` branch. The same Docker image used
+for inference can prepare the files:
+
+```bash
+git checkout libero
+docker pull dexmal/opendm:latest
+
+docker run --rm \
+  --gpus all \
+  --network host \
+  --ipc=host \
+  -v "$PWD":/app/opendm \
+  -w /app/opendm \
+  dexmal/opendm:latest \
+  bash -lc 'source /opt/conda/etc/profile.d/conda.sh && \
+    conda activate opendm && \
+    pip install -e . && \
+    script/libero_runner.sh dataset && \
+    script/libero_runner.sh model'
+```
+
+This downloads `Dexmal/libero` and organizes its files under `data/libero`,
+then downloads `Dexmal/DM05` under `checkpoints/DM05`. If an earlier download
+was interrupted, rerun the affected `dataset` or `model` subcommand with
+`--force`; Hugging Face resumes files already present in its cache.
+
+Before training, confirm these paths exist:
+
+```text
+data/libero/libero_pi0_all/jsonl/
+data/libero/libero_pi0_all/image/
+checkpoints/DM05/config.json
+checkpoints/DM05/model.safetensors
+```
+
+### 2. Full-parameter fine-tuning
+
+This is the reference full-training configuration: 8 GPUs, per-GPU batch 4,
+global batch 32, 100,000 optimizer steps, learning rate `2e-5`, and checkpoints
+every 10,000 steps. The LIBERO entry point enables FSDP for multi-GPU training.
+
+```bash
+docker run -d --rm \
+  --name dm05-libero-train \
+  --gpus all \
+  --network host \
+  --ipc=host \
+  -v "$PWD":/app/opendm \
+  -w /app/opendm \
+  dexmal/opendm:latest \
+  bash -lc 'source /opt/conda/etc/profile.d/conda.sh && \
+    conda activate opendm && \
+    pip install -e . && \
+    script/libero_runner.sh train \
+      --nproc-per-node 8 \
+      -- \
+      --model-config.model-name-or-path ./checkpoints/DM05 \
+      --model-config.chunk-size 10 \
+      --optimizer-config.base-lr 2e-5 \
+      --optimizer-config.warmup-steps 1000 \
+      --trainer-config.output-dir ./user_checkpoints/dm05_libero_full \
+      --trainer-config.per-device-train-batch-size 4 \
+      --trainer-config.gradient-accumulation-steps 1 \
+      --trainer-config.num-train-steps 100000 \
+      --trainer-config.save-steps 10000'
+
+docker logs -f dm05-libero-train
+```
+
+Because the repository is bind-mounted, checkpoints remain under
+`user_checkpoints/dm05_libero_full` after the container exits. Starting the
+same command again automatically resumes from the latest `checkpoint-*` in
+that output directory. Use a new output directory when changing the base
+model, dataset, action mode, or chunk size.
+
+GPU memory requirements depend on GPU type and software versions. If batch 4
+does not fit, lower `per-device-train-batch-size` and increase
+`gradient-accumulation-steps` so their product, multiplied by the GPU count,
+remains 32. A short smoke run can use a separate output directory and a small
+`num-train-steps`, but its checkpoint is not meaningful for SR comparison.
+
+### 3. LoRA alternative
+
+For lower-memory adaptation, use the dedicated LoRA entry point. Its reference
+defaults are rank 32, alpha 16, learning rate `5e-4`, 50,000 steps, and a save
+interval of 10,000 steps:
+
+```bash
+script/dm05_launcher.sh \
+  --exp playground/dm05_libero_lora.py \
+  --nproc_per_node 8 \
+  --task train \
+  --data-config.jsonl-dir ./data/libero/libero_pi0_all \
+  --data-config.image-dir ./data/libero/libero_pi0_all/image \
+  --model-config.model-name-or-path ./checkpoints/DM05 \
+  --trainer-config.output-dir ./user_checkpoints/dm05_libero_lora \
+  --trainer-config.num-train-steps 50000 \
+  --trainer-config.save-steps 10000
+```
+
+Run this command inside the same OpenDM container if training is Docker-based.
+For multi-GPU LoRA, the `checkpoint-*` directories are the canonical artifacts
+for evaluation. More details are in
+[`docs/en/dm05_libero_lora_training.md`](docs/en/dm05_libero_lora_training.md).
+
+### 4. Evaluate a trained checkpoint
+
+Use the LIBERO evaluation procedure below, but replace the released checkpoint
+path in the policy-service command:
+
+- Full fine-tuning: keep `--exp playground/dm05_libero.py` and set
+  `--model-config.model-name-or-path` to the selected `checkpoint-*` directory.
+- LoRA: use `--exp playground/dm05_libero_lora.py` and set the model path to the
+  selected LoRA `checkpoint-*` directory.
+
+Keep chunk size 10, output action dimension 7, and the two image prompts
+unchanged. Each training checkpoint must retain its matching `norm_stats.json`.
+
 ## Reproduced LIBERO evaluation results
 
 The official `Dexmal/DM05-libero` checkpoint was evaluated on 2026-09-06 with the
