@@ -259,6 +259,29 @@ WANDB_PROJECT=dm05-memory bash script/train_memory_sft.sh
 
 For non-interactive jobs, pass `WANDB_API_KEY` through the job environment or a secrets manager. Do not store it in source files or shell scripts.
 
+## Reproduced LIBERO evaluation results
+
+The official `Dexmal/DM05-libero` checkpoint was evaluated on 2026-09-06 with the
+[Dexbotic benchmark](https://github.com/dexmal/dexbotic-benchmark) at commit
+`e399519`. No additional fine-tuning was performed for these results.
+
+The evaluation covers all four standard LIBERO suites, with 10 tasks per suite
+and 50 episodes per task (2,000 episodes in total). It uses `seed=7` and
+`replan_steps=10`.
+
+| LIBERO suite | Successful episodes | Success rate |
+| --- | ---: | ---: |
+| Spatial (`libero_spatial`) | 496 / 500 | 99.2% |
+| Object (`libero_object`) | 496 / 500 | 99.2% |
+| Goal (`libero_goal`) | 493 / 500 | 98.6% |
+| Long-horizon (`libero_10`) | 474 / 500 | 94.8% |
+| **Overall** | **1,959 / 2,000** | **97.95%** |
+
+All 2,000 rollout videos were generated successfully with no empty files. The
+untracked evaluation artifacts on the reproduction machine are stored under
+`/data/wudi/code_v6/experiment_runs/opendm-libero-full-sr-20260906`, with the
+aggregate machine-readable results in `summary.json`.
+
 ## Reproduced RoboDojo memory results
 
 The following task-level simulation results are reported for **DM0.5 / OpenDM05** on the official [RoboDojo rollout leaderboard](https://robodojo-benchmark.com/leaderboard/rollouts/OpenDM05?bench=sim). Values were checked on 2026-09-01. `Avg Score` and `Success Rate` are separate leaderboard metrics.
